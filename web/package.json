@@ -1,0 +1,14 @@
+{
+  "name": "nixpkgs-ext-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "python3 ../scripts/gen-index.py && vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

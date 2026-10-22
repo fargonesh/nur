@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+#q { width: 100%; font-size: 1.1rem; padding: .5rem; margin: 1rem 0; }
+ul { list-style: none; padding: 0; }
+li { border-top: 1px solid #ddd; padding: .75rem 0; }
+pre { background: #f4f4f4; padding: .5rem; overflow-x: auto; cursor: copy; }
