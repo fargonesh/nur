@@ -2,9 +2,7 @@ const list = document.getElementById('list');
 const q = document.getElementById('q');
 const count = document.getElementById('count');
 let pkgs = [];
-try {
-  pkgs = await (await fetch('./packages.json')).json();
-} catch { pkgs = []; }
+fetch('./packages.json').then((r) => r.json()).then((p) => { pkgs = p; render(q.value); }).catch(() => {});
 
 function render(filter = '') {
   const f = filter.trim().toLowerCase();
