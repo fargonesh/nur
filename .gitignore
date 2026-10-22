@@ -13,3 +13,4 @@ devenv.local.yaml
 /web/dist/
 /web/node_modules/
 result
+.env

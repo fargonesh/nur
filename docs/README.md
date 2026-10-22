@@ -1,6 +1,6 @@
 # fargone-nur
 
-Alternative nixpkgs overlay + pushable git server + web browser. Assumes you
+Alternative nixpkgs overlay + SSH-pushable git server + web browser. Assumes you
 know nix flakes and git; no hand-holding below.
 
 ## Run
@@ -15,7 +15,7 @@ devenv up        # git daemon :9418, web+git server :3001, vite dev :5173
 
 ```sh
 git clone http://<host>:3001/git/fargone-nur.git
-cd fargone-nur && <edit pkgs/...> && git push origin main
+cd fargone-nur && <edit pkgs/...> && git remote set-url --push origin git+ssh://USER@HOST/path/repos/fargone-nur.git && git push origin main
 # browse: http://<host>:3001/#/repos — commits, authors, files update instantly
 ```
 
@@ -31,7 +31,7 @@ nixpkgs.overlays = [ inputs.fargone-nur.overlays.default ];
 
 ```sh
 nix run git+http://<host>:3001/git/fargone-nur.git#hello-fargone
-# anonymous git:// : git://<host>:9418/fargone-nur (enable --enable=receive-pack already on)
+# anonymous fetch: git://<host>:9418/fargone-nur (pushes are SSH only)
 ```
 
 ## Add a package
@@ -46,6 +46,11 @@ It shows up in `/#/` search and `nix build .#<name>` with no registration step.
 | `PORT` | 3001 | web+git server port |
 | `REPOS_DIR` | ./repos | bare repos served |
 | `SITE_ORIGIN` | request host | canonical origin in flake refs (set to `https://nix.fargone.sh` in prod) |
-| `GIT_ALLOW_ANON_PUSH` | 1 | anonymous push over HTTP; set 0 + auth proxy publicly |
+| `DATA_DIR` | ./data | JSON storage for SSH keys |
+| `OAUTH_ORIGIN` | https://fargone.sh | OAuth provider used by the API to validate bearer tokens |
+| `OAUTH_CLIENT_ID` | unset | OAuth client ID used by the server token proxy |
+| `OAUTH_CLIENT_SECRET` | unset | Server-only OAuth client secret; never expose as `VITE_*` |
+| `VITE_OAUTH_ORIGIN` | https://fargone.sh | OAuth provider used by the browser login |
+| `VITE_OAUTH_CLIENT_ID` | unset | Public OAuth client ID for the browser login |
 | `VITE_GIT_URL` | same-origin `/git` | clone/push URL shown in UI |
 | `VITE_SITE_ORIGIN` | `location.origin` | display origin in UI |

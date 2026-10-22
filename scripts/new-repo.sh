@@ -7,10 +7,9 @@ root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 dir="$root/repos/$name.git"
 git init --bare -b main "$dir"
 touch "$dir/git-daemon-export-ok"
-git -C "$dir" config http.receivepack true
+git -C "$dir" config http.receivepack false
 echo "created $dir"
-echo "push:   git remote add origin http://<host>:3001/git/$name.git ; git push origin main   (HTTP, instant in web UI)"
-echo "push:   git remote add origin git://localhost:9418/$name ; git push origin main   (anon demo)"
+echo "push:   git remote set-url --push origin git+ssh://USER@HOST$dir                 (SSH only)"
 echo "push:   git remote add origin $dir                                              (local)"
 echo "push:   git remote add origin git+ssh://\$USER@\$HOST$dir                       (ssh, needs sshd)"
 echo "browse: http://<host>:3001/#/r/$name"

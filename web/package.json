@@ -6,13 +6,24 @@
   "scripts": {
     "dev": "vite --port 5173",
     "start": "node server.js",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4173"
   },
   "dependencies": {
-    "highlight.js": "^11.9.0"
+    "botanical-ui": "^4.0.1",
+    "highlight.js": "^11.9.0",
+    "lucide-react": "^0.555.0",
+    "marked": "^18.1.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4",
+    "typescript": "^5",
     "vite": "^5.4.0"
   }
 }
