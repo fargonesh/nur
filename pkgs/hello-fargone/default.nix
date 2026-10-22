@@ -4,13 +4,13 @@
   writeShellScriptBin,
 }:
 
-writeShellScriptBin "hello-nur" ''
-  echo "hello from nixpkgs-ext NUR"
+writeShellScriptBin "hello-fargone" ''
+  echo "hello from fargone-nur NUR"
 ''
 // {
   meta = with lib; {
-    description = "Example package for nixpkgs-ext NUR";
-    homepage = "git://localhost:9418/nixpkgs-ext";
+    description = "Example package for fargone-nur NUR";
+    homepage = "git://localhost:9418/fargone-nur";
     license = licenses.mit;
     platforms = platforms.all;
   };

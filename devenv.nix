@@ -11,9 +11,11 @@
     pkgs.nodejs
   ];
 
-  # git daemon (anon fetch/push demo) + web UI (vite). ssh push needs system sshd, no config here.
-  # ponytail: no forgejo/gitea, add when ACL/web-git UI outgrows `git daemon` + vite index
+  # git daemon (git:// anon) + node server (UI + /api + push over HTTP) + vite dev.
+  # ssh push needs system sshd, no config here.
+  # ponytail: no forgejo/gitea, add when ACL needs outgrow anon push + vite browser
   processes.git-daemon.exec = "./scripts/git-daemon.sh";
+  processes.api.exec = "node web/server.js";
   processes.web.exec = "npm --prefix web run dev";
 
   # https://devenv.sh/languages/

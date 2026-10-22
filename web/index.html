@@ -3,20 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>nixpkgs-ext — browse</title>
+  <title>fargone-nur — browse</title>
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
   <main>
-    <h1>nixpkgs-ext</h1>
-    <p id="count"></p>
-    <input id="q" type="search" placeholder="search packages…" autocomplete="off" autofocus />
-    <ul id="list"></ul>
-    <h2>use as a nix source</h2>
-    <pre>nix run git+file:///home/flora/Projects/nixpkgs-ext#hello-nur
-# flake input:
-# nixpkgs-ext.url = "git+file:///home/flora/Projects/nixpkgs-ext";
-# nixpkgs.overlays = [ inputs.nixpkgs-ext.overlays.default ];</pre>
+    <h1><a href="#/">fargone-nur</a></h1>
+    <nav><a href="#/">packages</a> · <a href="#/repos">repos</a></nav>
+    <div id="view"><p class="dim">loading…</p></div>
   </main>
   <script type="module" src="./src/main.js"></script>
 </body>

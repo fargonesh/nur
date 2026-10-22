@@ -1,5 +1,5 @@
 {
-  description = "nixpkgs-ext NUR — alternative nixpkgs overlay";
+  description = "fargone-nur NUR — alternative nixpkgs overlay";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -26,8 +26,8 @@
 
       # nix flake check entrypoint; keep lazy: one system is enough to typecheck
       # Usage as a nix source:
-      #   git+file:///home/flora/Projects/nixpkgs-ext
-      #   git://localhost:9418/nixpkgs-ext          (git daemon, see scripts/)
-      #   git+ssh://user@host/path/repos/nixpkgs-ext.git
+      #   git+file:///home/flora/Projects/fargone-nur
+      #   git://localhost:9418/fargone-nur          (git daemon, see scripts/)
+      #   git+ssh://user@host/path/repos/fargone-nur.git
     };
 }

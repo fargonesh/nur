@@ -1,4 +1,4 @@
-# Add a package: copy pkgs/hello-nur/ to pkgs/<name>/ and it appears automatically.
+# Add a package: copy pkgs/hello-fargone/ to pkgs/<name>/ and it appears automatically.
 { pkgs }:
 
 let
