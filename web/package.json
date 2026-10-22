@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "gen": "python3 ../scripts/gen-index.py",
     "dev": "vite --port 5173",
-    "build": "python3 ../scripts/gen-index.py && vite build",
+    "build": "vite build",
     "preview": "vite preview --port 4173"
   },
   "devDependencies": {
