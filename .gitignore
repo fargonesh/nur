@@ -12,3 +12,4 @@ devenv.local.yaml
 /repos/
 /web/dist/
 /web/node_modules/
+result
