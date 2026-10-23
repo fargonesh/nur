@@ -1,4 +1,4 @@
-# Add a package: copy pkgs/hello-fargone/ to pkgs/<name>/ and it appears automatically.
+# Add a package: create pkgs/<name>/default.nix and it appears automatically.
 { pkgs }:
 
 let

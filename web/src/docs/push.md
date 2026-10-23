@@ -5,10 +5,20 @@ order: 2
 
 # Push and see it
 
+Sign in at https://nur.fargone.sh, add your public key under Settings, then:
+
 ```sh
-git clone http://<host>:3001/git/fargone-nur.git
-cd fargone-nur && <edit pkgs/...> && git push origin main
-# browse: http://<host>:3001/#/repos — commits, authors, files update instantly
+git clone https://nur.fargone.sh/git/fargone-nur.git
+cd fargone-nur
+# edit pkgs/<name>/...
+git remote set-url --push origin ssh://nur@nur.fargone.sh/var/lib/nur/repos/fargone-nur.git
+git push origin main
 ```
 
-Pushes go over SSH only. Anonymous fetch stays available over git:// and https://.
+Browse the result at https://nur.fargone.sh/#/repos — commits, authors and files
+are read from the bare repo on each request.
+
+Pushes are SSH only. Anonymous fetch stays available over https
+(`https://nur.fargone.sh/git/fargone-nur.git`) and `git://nur.fargone.sh/fargone-nur`.
+Registered keys are materialised into the `nur` user's `authorized_keys` within a
+second of saving them; removing a key revokes it just as fast.

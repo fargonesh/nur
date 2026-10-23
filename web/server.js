@@ -2,7 +2,7 @@
 // Live git browser backend: serves web/dist, builds repo JSON at request time
 // from bare repos ($REPOS_DIR), and handles clone+push via `git http-backend`.
 // Node stdlib only. Env: PORT=3001 REPOS_DIR=./repos
-//   SITE_ORIGIN=https://nix.fargone.sh (flake refs; default: request host)
+//   SITE_ORIGIN=https://nur.fargone.sh (flake refs; default: request host)
 //   DATA_DIR=./data (stub users' SSH keys)
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -268,6 +268,19 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(tokenResponse.status, { 'content-type': 'application/json' });
       res.end(await tokenResponse.text());
     } catch (e) { json(res, 400, { error: e.message }); }
+    return;
+  }
+  // The provider's userinfo endpoint sends no CORS headers, so the browser
+  // can't call it directly from another origin. Proxy it like the token
+  // exchange above.
+  if (u.pathname === '/api/oauth/userinfo' && req.method === 'GET') {
+    try {
+      const upstream = await fetch(`${(process.env.OAUTH_ORIGIN ?? 'https://fargone.sh').replace(/\/$/, '')}/oauth/userinfo`, {
+        headers: req.headers.authorization ? { authorization: req.headers.authorization } : {},
+      });
+      res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
+      res.end(await upstream.text());
+    } catch (e) { json(res, 502, { error: e.message }); }
     return;
   }
   if (u.pathname === '/api/ssh-keys' && req.method === 'GET') {

@@ -241,7 +241,7 @@ export async function handleOAuthCallback(): Promise<boolean> {
   });
   if (!tokenResponse.ok) throw new Error(`OAuth token exchange failed: ${await tokenResponse.text()}`);
   const tokens = await tokenResponse.json();
-  const profileResponse = await fetch(`${OAUTH}/oauth/userinfo`, {
+  const profileResponse = await fetch('/api/oauth/userinfo', {
     headers: { authorization: `Bearer ${tokens.access_token}` },
   });
   if (!profileResponse.ok) throw new Error('Could not load OAuth profile');

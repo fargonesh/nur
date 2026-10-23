@@ -5,10 +5,25 @@ order: 1
 
 # Run
 
+The live instance is at **https://nur.fargone.sh**. It serves the built UI, the
+JSON API, smart-HTTP git and these docs; `nur-seed` mirrors this repo into
+`/var/lib/nur/repos` on boot and `nur-sync` fast-forwards it every 15 minutes.
+
+## Local dev
+
 ```sh
 devenv up        # git daemon :9418, web+git server :3001, vite dev :5173
 # or: node web/server.js            (serves web/dist + /api + /git)
 # or: npm --prefix web run dev      (vite only, proxies /api + /git to :3001)
 ```
 
-New repo: `./scripts/new-repo.sh <name>` — it appears in the UI with zero config.
+`devenv up` needs nothing but git and nodejs; SSH push uses your system sshd.
+A new local repo: `./scripts/new-repo.sh <name>` — it appears in the UI with
+zero config.
+
+## Production build
+
+```sh
+nix build .#nur-web
+# result/bin/nur-web with REPOS_DIR, DATA_DIR, PORT, SITE_ORIGIN, OAUTH_* set
+```

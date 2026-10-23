@@ -77,11 +77,10 @@
 
       overlays.default = import ./overlay.nix;
 
-      # nix flake check entrypoint; keep lazy: one system is enough to typecheck
       # Usage as a nix source:
-      #   git+file:///home/flora/Projects/fargone-nur
-      #   git://localhost:9418/fargone-nur          (git daemon, see scripts/)
-      #   git+ssh://user@host/path/repos/fargone-nur.git
+      #   git+https://nur.fargone.sh/git/fargone-nur.git
+      #   git://nur.fargone.sh/fargone-nur                       (anonymous, port 9418)
+      #   ssh://nur@nur.fargone.sh/var/lib/nur/repos/fargone-nur.git   (push)
     } // {
       nixosModules.default =
         { config, lib, pkgs, ... }:
