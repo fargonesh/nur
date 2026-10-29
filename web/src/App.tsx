@@ -32,15 +32,21 @@ import {
   getSession,
   getText,
   handleOAuthCallback,
+  nixAttr,
+  repoFlakeBase,
   setSession,
   short,
   signIn,
   submit,
   type Commit,
   langColor,
+  type BuildJob,
+  type BuildResult,
+  type CacheInfo,
   type LanguageStat,
   type Pkg,
   type RepoDetail,
+  type RepoPkg,
   type RepoSummary,
   type SessionUser,
   type SshKey,
@@ -116,6 +122,130 @@ function LanguageBar({ languages, compact }: { languages?: LanguageStat[]; compa
   );
 }
 
+function buildColor(status?: string) {
+  if (status === 'ok') return '#1a7f37';
+  if (status === 'failed' || status === 'timeout' || status === 'push-failed') return '#cf222e';
+  if (status === 'skipped') return '#9a6700';
+  return '#8c959f';
+}
+
+function BuildDot({ build, showLabel }: { build?: { status: string; finished_at?: number } | null; showLabel?: boolean }) {
+  const title = build
+    ? `build ${build.status}${build.finished_at ? ` · ${date(String(build.finished_at * 1000))}` : ''}`
+    : 'not built yet — installs compile from source';
+  return (
+    <span className="inline-flex items-center gap-1 font-mono text-[11px] opacity-80" title={title}>
+      <span className="inline-block w-2 h-2 rounded-full border border-bio-black" style={{ background: buildColor(build?.status) }} />
+      {showLabel && <span>{build?.status ?? 'source'}</span>}
+    </span>
+  );
+}
+
+function PkgOptions({ p }: { p: Pkg | RepoPkg }) {
+  const rows: Array<[string, string]> = [];
+  if (p.version) rows.push(['version', p.version]);
+  const licenses = p.licenses?.length ? p.licenses.join(', ') : p.license;
+  if (licenses) rows.push(['license', licenses]);
+  if (p.mainProgram) rows.push(['program', p.mainProgram]);
+  else if (p.bin) rows.push(['program', p.bin]);
+  if (p.homepage) rows.push(['homepage', p.homepage]);
+  if (p.changelog) rows.push(['changelog', p.changelog]);
+  if (p.maintainers?.length) rows.push(['maintainers', p.maintainers.join(', ')]);
+  if (p.platforms?.length) rows.push(['platforms', p.platforms.join(', ')]);
+  if (p.source) rows.push(['source', p.source]);
+  if (p.branch) rows.push(['branch', `${p.branch}${p.commit ? ` @ ${short(p.commit)}` : ''}`]);
+  if (p.broken) rows.push(['broken', 'true']);
+  if (p.unfree) rows.push(['unfree', 'true']);
+  if (!rows.length && !p.longDescription) return null;
+  return (
+    <div className="font-mono text-[11px] mt-2">
+      {p.longDescription && <p className="opacity-70 mb-2 whitespace-pre-wrap">{p.longDescription}</p>}
+      {rows.length > 0 && (
+        <dl>
+          {rows.map(([k, v]) => (
+            <div key={k} className="flex gap-2 py-0.5 border-b border-bio-black/10 last:border-0">
+              <dt className="opacity-50 shrink-0 w-24">{k}</dt>
+              <dd className="opacity-80 break-all">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function BuildsCard({ repo }: { repo: RepoDetail }) {
+  const [data, setData] = useState<{ queue: BuildJob[]; recent: BuildResult[] } | null>(null);
+  useEffect(() => {
+    get<{ queue: BuildJob[]; recent: BuildResult[] }>(`/api/builds/${repo.name}`)
+      .then(setData)
+      .catch(() => setData({ queue: [], recent: [] }));
+  }, [repo.name]);
+  if (!data) return <BrutalCard title="Builds"><p className="font-mono text-xs opacity-60">loading…</p></BrutalCard>;
+  const queued = data.queue.filter((j) => j.branch === repo.rev || !repo.rev);
+  return (
+    <BrutalCard title={`Builds${data.queue.length ? ` · ${data.queue.length} queued` : ''}`}>
+      {data.recent.length === 0 && data.queue.length === 0 ? (
+        <p className="font-mono text-xs opacity-60">No builds yet — push to a branch to queue one.</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {queued.length > 0 && (
+            <p className="font-mono text-[11px] opacity-70">
+              queued: {queued.map((j) => `${j.branch}@${short(j.rev)}`).join(', ')}
+            </p>
+          )}
+          {data.recent.slice(0, 5).map((b) => (
+            <div key={`${b.branch}-${b.finished_at}`} className="border-t border-bio-black/20 first:border-0 pt-2 first:pt-0">
+              <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
+                <span className="truncate">{b.branch} @ {short(b.rev)}</span>
+                <BuildDot build={b} showLabel />
+              </div>
+              <p className="font-mono text-[10px] opacity-60">{date(String(b.finished_at * 1000))}</p>
+              {b.error && <p className="font-mono text-[11px] opacity-80 mt-1">error: {b.error}</p>}
+              {Object.entries(b.packages).map(([n, p]) => (
+                <details key={n} className="font-mono text-[11px] mt-1">
+                  <summary className="cursor-pointer opacity-80">
+                    <span style={{ color: buildColor(p.status) }}>●</span> {n} · {p.status}
+                    {p.duration_s != null ? ` · ${p.duration_s}s` : ''}
+                  </summary>
+                  {p.log_tail && (
+                    <pre className="border border-bio-black/20 bg-bio-gray/40 p-2 mt-1 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">{p.log_tail}</pre>
+                  )}
+                </details>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </BrutalCard>
+  );
+}
+
+function PackageRow({ p }: { p: RepoPkg }) {
+  return (
+    <div className="border-b border-bio-black/20 last:border-0 py-3 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="font-serif text-lg">{p.name}</span>
+        <span className="flex gap-1 shrink-0 items-center">
+          <BuildDot build={p.build} />
+          {p.version && <Badge>{p.version}</Badge>}
+          <Badge variant="outline">{p.kind ?? 'legacy'}</Badge>
+          {p.valid === false && <Badge variant="success">invalid</Badge>}
+        </span>
+      </div>
+      <p className="font-mono text-xs opacity-70">{p.description || 'No description yet.'}</p>
+      <PkgOptions p={p} />
+      {p.warnings?.length ? (
+        <p className="font-mono text-[11px] mt-1 opacity-70">warning: {p.warnings.join(' · ')}</p>
+      ) : null}
+      <div className="flex items-center justify-between gap-2 mt-2">
+        <code className="font-mono text-[11px] opacity-70 break-all">nix run {p.flake}</code>
+        <CopyButton text={`nix run ${p.flake}`} />
+      </div>
+    </div>
+  );
+}
+
 function InstallModal({
   repo,
   onClose,
@@ -123,7 +253,17 @@ function InstallModal({
   repo: RepoDetail;
   onClose: () => void;
 }) {
-  const flakeUrl = `git+${GIT}/${repo.name}.git`;
+  const base = repoFlakeBase(repo);
+  const input = `inputs.${nixAttr(repo.name)}`;
+  const [cache, setCache] = useState<CacheInfo | null>(null);
+  useEffect(() => {
+    get<CacheInfo>('/api/cache').then(setCache).catch(() => setCache(null));
+  }, []);
+  const cacheUrl = cache?.endpoint && cache?.bucket ? `${cache.endpoint}/${cache.bucket}` : '';
+  const cachedRun =
+    cache?.publicKey && cacheUrl && repo.packages.length > 0
+      ? `nix run --extra-substituters ${cacheUrl} --extra-trusted-public-keys ${cache.publicKey} ${repo.packages[0].flake}`
+      : null;
   return (
     <Modal isOpen onClose={onClose} title={`Install from ${repo.name}`}>
       <div className="flex flex-col gap-4 font-mono text-xs">
@@ -131,8 +271,8 @@ function InstallModal({
           <p className="uppercase text-[10px] opacity-60 mb-1">1 · Add the overlay</p>
           <pre className="border border-bio-black bg-bio-gray/40 p-2 overflow-x-auto whitespace-pre-wrap">{`# flake.nix
 {
-  inputs.fargone-nur.url = "${flakeUrl}";
-  nixpkgs.overlays = [ inputs.fargone-nur.overlays.default ];
+  ${input}.url = "${base}";
+  nixpkgs.overlays = [ ${input}.overlays.default ];
 }`}</pre>
         </div>
         <div>
@@ -142,13 +282,25 @@ function InstallModal({
           ) : (
             <pre className="border border-bio-black bg-bio-gray/40 p-2 overflow-x-auto whitespace-pre-wrap">{`# configuration.nix
 environment.systemPackages = with pkgs; [
-${repo.packages.map((p) => `  ${p.name}`).join('\n')}
+${repo.packages.map((p) => `  pkgs.${nixAttr(p.name)},`).join('\n')}
 ];`}</pre>
           )}
         </div>
         {repo.packages.length > 0 && (
-          <p className="opacity-60">…or try one now: `nix run {repo.packages[0].flake}#&lt;pkg&gt;`</p>
+          <p className="opacity-60">…or try one now: `nix run {repo.packages[0].flake}`</p>
         )}
+        <div>
+          <p className="uppercase text-[10px] opacity-60 mb-1">3 · Binary cache (skip the compile)</p>
+          {cachedRun ? (
+            <pre className="border border-bio-black bg-bio-gray/40 p-2 overflow-x-auto whitespace-pre-wrap">{cachedRun}</pre>
+          ) : (
+            <p className="opacity-60">Cache warming up — builders push here after the next push.</p>
+          )}
+          <p className="opacity-60 mt-1">
+            Persist it in `~/.config/nix/nix.conf`: `extra-substituters = {cacheUrl || '…'}`
+            + `extra-trusted-public-keys = {cache?.publicKey ?? '…'}`.
+          </p>
+        </div>
       </div>
     </Modal>
   );
@@ -211,7 +363,10 @@ function Packages() {
     const f = q.trim().toLowerCase();
     return (pkgs ?? []).filter(
       (p) =>
-        (!f || `${p.name} ${p.description} ${p.repo}`.toLowerCase().includes(f)) &&
+        (!f ||
+          `${p.name} ${p.description} ${p.repo} ${p.version ?? ''} ${(p.maintainers ?? []).join(' ')} ${p.homepage ?? ''}`
+            .toLowerCase()
+            .includes(f)) &&
         (!lang || p.language === lang),
     );
   }, [pkgs, q, lang]);
@@ -276,17 +431,79 @@ function Packages() {
           >
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-serif text-2xl">{p.name}</h3>
-              <span className="flex gap-1">
+              <span className="flex gap-1 items-center">
+                <BuildDot build={p.build} />
+                {p.version && <Badge>{p.version}</Badge>}
                 {p.language && <Badge>{p.language}</Badge>}
                 <Badge variant="success">{p.repo}</Badge>
+                {p.valid === false && <Badge variant="outline">invalid</Badge>}
               </span>
             </div>
             <p className="font-mono text-xs opacity-70">{p.description || 'No description yet.'}</p>
+            {p.warnings?.length ? (
+              <p className="font-mono text-[11px] opacity-70 mt-1">warning: {p.warnings[0]}</p>
+            ) : null}
+            {(p.licenses?.length || p.homepage || p.maintainers?.length) && (
+              <p className="font-mono text-[11px] opacity-60 mt-1">
+                {[p.licenses?.join(', '), p.homepage, p.maintainers?.join(', ')].filter(Boolean).join(' · ')}
+              </p>
+            )}
             <div className="mt-3"><LanguageBar languages={p.languages} compact /></div>
             <p className="font-mono text-xs opacity-70 mt-3">nix run {p.flake}</p>
           </a>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PublishRepo() {
+  const { user } = useUser();
+  const [name, setName] = useState('');
+  const [created, setCreated] = useState<{ name: string; clone: string; push: string; flake: string } | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!user) return null;
+  const create = async () => {
+    setError('');
+    setCreated(null);
+    const n = name.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(n)) {
+      setError('name must match [A-Za-z0-9][A-Za-z0-9_-]{0,63} (dashes ok, no dots)');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = (await api('/api/repos', {
+        method: 'POST',
+        body: JSON.stringify({ name: n }),
+      })) as { name: string; clone: string; push: string; flake: string };
+      setCreated(r);
+      setName('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'create failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="border border-bio-black p-4 mb-4">
+      <p className="font-mono text-[10px] uppercase opacity-60 mb-2">Publish a repository</p>
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <Input value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} placeholder="package-name" />
+        </div>
+        <Button size="sm" onClick={create} disabled={busy}>{busy ? '…' : 'Create'}</Button>
+      </div>
+      {error && <p className="font-mono text-xs mt-2 opacity-70">error: {error}</p>}
+      {created && (
+        <div className="font-mono text-xs mt-2 flex flex-col gap-1">
+          <p className="opacity-70">created — push to it to queue the first build:</p>
+          <p className="break-all">git remote add origin {created.clone}</p>
+          <p className="break-all">git remote set-url --push origin {created.push}</p>
+          <p><a className="underline" href={`#/r/${created.name}`}>open {created.name} →</a></p>
+        </div>
+      )}
     </div>
   );
 }
@@ -304,6 +521,7 @@ function Repos() {
       <p className="font-mono text-xs opacity-60 mb-4">
         {repos === null ? 'loading…' : `${repos.length} repositories`}
       </p>
+      <PublishRepo />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {(repos ?? []).map((r) => (
           <a
@@ -431,6 +649,21 @@ function Repo({ name, rev }: { name: string; rev?: string | null }) {
                 </div>
                 <div className="flex flex-col gap-4">
                   <CloneCard repo={repo} />
+                  <BuildsCard repo={repo} />
+                  <BrutalCard
+                    title={`Packages · ${repo.packages.filter((p) => p.valid).length}/${repo.packages.length}`}
+                  >
+                    {repo.packages.length === 0 ? (
+                      <p className="font-mono text-xs opacity-60">
+                        No packages in this repo yet. A repo becomes a package when its root
+                        declares it: root <code>default.nix</code> with a matching{' '}
+                        <code>pname</code>, or a <code>flake.nix</code> with a matching package
+                        output.
+                      </p>
+                    ) : (
+                      repo.packages.map((p) => <PackageRow key={p.name} p={p} />)
+                    )}
+                  </BrutalCard>
                   <BrutalCard title={`Languages · ${repo.mainLanguage}`}>
                     <LanguageBar languages={repo.languages} />
                   </BrutalCard>
