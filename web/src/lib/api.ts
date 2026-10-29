@@ -190,7 +190,7 @@ export const LANG_COLORS: Record<string, string> = {
 export const langColor = (l: string) => LANG_COLORS[l] ?? '#9ca3af';
 
 export const short = (id: string) => id.slice(0, 7);
-export const date = (d: string) => new Date(d).toLocaleString();
+export const date = (d: string) => new Date(/^\d+$/.test(d) ? Number(d) : d).toLocaleString();
 
 // Quote a package/repo name for Nix: `foo-bar` must be `pkgs."foo-bar"`.
 export const nixAttr = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;

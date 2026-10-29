@@ -11,7 +11,7 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
+        # ponytail: x86_64-darwin dropped by nixpkgs 26.11; re-add only if nixpkgs restores it
         "aarch64-darwin"
       ];
       forAll = lib.genAttrs systems;
@@ -343,7 +343,7 @@
               outputs = { self, nixpkgs, ... } @ inputs:
                 let
                   lib = nixpkgs.lib;
-                  systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+                   systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
                   forAll = lib.genAttrs systems;
                   names = builtins.attrNames (builtins.removeAttrs inputs [ "self" "nixpkgs" ]);
                   # First repo alphabetically wins on duplicate package names (matches /api/packages).
