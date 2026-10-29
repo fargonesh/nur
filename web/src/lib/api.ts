@@ -56,11 +56,63 @@ export interface LanguageStat {
   percent: number;
 }
 
+export interface BuildRef {
+  status: string;
+  rev?: string;
+  finished_at?: number;
+  duration_s?: number;
+}
+
+export interface BuildJob {
+  id: string;
+  repo: string;
+  branch: string;
+  rev: string;
+  pushed_at: number;
+}
+
+export interface BuildResult {
+  repo: string;
+  branch: string;
+  rev: string;
+  status: string;
+  error: string;
+  packages: Record<string, { status: string; duration_s?: number; paths?: string[]; log_tail?: string }>;
+  started_at: number;
+  finished_at: number;
+}
+
+export interface CacheInfo {
+  endpoint: string;
+  bucket: string;
+  publicKey: string;
+}
+
 export interface Pkg {
   name: string;
   description: string;
   repo: string;
   flake: string;
+  kind?: 'root' | 'legacy';
+  source?: string;
+  branch?: string;
+  commit?: string;
+  version?: string;
+  bin?: string;
+  longDescription?: string;
+  license?: string;
+  licenses?: string[];
+  homepage?: string;
+  changelog?: string;
+  downloadPage?: string;
+  mainProgram?: string;
+  maintainers?: string[];
+  platforms?: string[];
+  broken?: boolean;
+  unfree?: boolean;
+  valid?: boolean;
+  warnings?: string[];
+  build?: BuildRef | null;
   language?: string;
   languages?: LanguageStat[];
 }
@@ -92,6 +144,24 @@ export interface RepoPkg {
   description: string;
   license: string;
   flake: string;
+  kind?: 'root' | 'legacy';
+  source?: string;
+  branch?: string;
+  commit?: string;
+  version?: string;
+  longDescription?: string;
+  licenses?: string[];
+  homepage?: string;
+  changelog?: string;
+  downloadPage?: string;
+  mainProgram?: string;
+  maintainers?: string[];
+  platforms?: string[];
+  broken?: boolean;
+  unfree?: boolean;
+  valid?: boolean;
+  warnings?: string[];
+  build?: BuildRef | null;
   language?: string;
   languages?: LanguageStat[];
 }
@@ -100,6 +170,7 @@ export interface RepoDetail {
   name: string;
   head: string;
   rev: string;
+  commit: string;
   branches: { name: string; id: string }[];
   commits: Commit[];
   truncatedCommits: boolean;
@@ -120,6 +191,21 @@ export const langColor = (l: string) => LANG_COLORS[l] ?? '#9ca3af';
 
 export const short = (id: string) => id.slice(0, 7);
 export const date = (d: string) => new Date(d).toLocaleString();
+
+// Quote a package/repo name for Nix: `foo-bar` must be `pkgs."foo-bar"`.
+export const nixAttr = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+// Branch-aware flake base URL for a repo at the rendered rev:
+// default branch -> no query, other branches -> ?ref=, SHAs -> ?rev=.
+export function repoFlakeBase(repo: { name: string; rev: string; head: string }) {
+  const suffix =
+    repo.rev && repo.rev !== repo.head
+      ? /^[0-9a-f]{4,40}$/i.test(repo.rev)
+        ? `?rev=${repo.rev}`
+        : `?ref=${encodeURIComponent(repo.rev)}`
+      : '';
+  return `git+${GIT}/${repo.name}.git${suffix}`;
+}
 
 export function getSession(): Session | null {
   try {

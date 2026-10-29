@@ -26,6 +26,13 @@ for (const f of [path.join(HERE, '..', '.env'), path.join(HERE, '.env')]) {
 }
 const REPOS = path.resolve(process.env.REPOS_DIR ?? path.join(HERE, '..', 'repos'));
 const DATA = path.resolve(process.env.DATA_DIR ?? path.join(HERE, '..', 'data'));
+const QUEUE_DIR = path.resolve(process.env.BUILD_QUEUE_DIR ?? path.join(DATA, '..', 'builds', 'queue'));
+const RESULTS_DIR = path.resolve(process.env.BUILD_RESULTS_DIR ?? path.join(DATA, '..', 'builds', 'results'));
+const HOOK_RUNNER = process.env.HOOK_RUNNER ?? '';
+const CACHE_ENDPOINT = (process.env.CACHE_ENDPOINT ?? '').replace(/\/$/, '');
+const CACHE_BUCKET = process.env.CACHE_BUCKET ?? 'packages';
+const CACHE_PUBKEY_FILE = process.env.CACHE_PUBLIC_KEY_FILE ?? '';
+const PKG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const KEYS_FILE = path.join(DATA, 'ssh-keys.json');
 const USERS_FILE = path.join(DATA, 'users.json');
 const DIST = fs.existsSync(path.join(HERE, 'dist')) ? path.join(HERE, 'dist') : path.join(HERE, 'public');
@@ -170,7 +177,234 @@ function languagesOf(files) {
   return { languages, mainLanguage: languages[0]?.language ?? 'Other' };
 };
 
-const metaOf = (src, k) => (src.match(new RegExp(`\\b${k}\\s*=\\s*"([^"]+)"`)) || [])[1] ?? '';
+// --- packages are derived from repos -------------------------------------
+// One repo is one package: a repo named `floras-package` is the package
+// `floras-package`, installed as `git+<origin>/git/floras-package.git#floras-package`
+// (plus `?ref=<branch>` when a non-default branch is rendered).
+// Names must be flake-fragment safe and unique across the registry.
+const PACKAGE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Skip a double-quoted Nix string starting at i (the opening `"`).
+// Handles `\` escapes and `${...}` interpolation (with its own nesting).
+function skipDquote(src, i) {
+  i += 1;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === '$' && src[i + 1] === '{') { i = skipBalanced(src, i + 1); continue; }
+    if (c === '"') return i + 1;
+    i += 1;
+  }
+  return i;
+}
+
+// Skip an indented Nix string starting at i (the opening `''`); `'''` is an
+// escaped `''` inside.
+function skipSquote(src, i) {
+  i += 2;
+  while (i < src.length) {
+    if (src.startsWith("'''", i)) { i += 3; continue; }
+    if (src.startsWith("''", i)) {
+      // `${...}` interpolation can follow the closing quotes; the quotes still close.
+      return i + 2;
+    }
+    if (src[i] === '$' && src[i + 1] === '{') { i = skipBalanced(src, i + 1); continue; }
+    i += 1;
+  }
+  return i;
+}
+
+// Return the index just past the `}` balancing the `{` at openIdx,
+// ignoring braces inside strings/comments.
+function skipBalanced(src, openIdx) {
+  let depth = 0, i = openIdx;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '#') { const nl = src.indexOf('\n', i); i = nl < 0 ? src.length : nl + 1; continue; }
+    if (c === '/' && src[i + 1] === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; continue; }
+    if (c === '"') { i = skipDquote(src, i); continue; }
+    if (c === "'" && src[i + 1] === "'") { i = skipSquote(src, i); continue; }
+    if (c === '{') depth += 1;
+    else if (c === '}') { depth -= 1; if (depth === 0) return i + 1; }
+    i += 1;
+  }
+  return i;
+}
+
+// Extract the `meta = { ... };` block text (without outer braces), or ''.
+function extractMetaBlock(src) {
+  const m = src.match(/\bmeta\s*=\s*\{/);
+  if (!m) return '';
+  const open = m.index + m[0].length - 1;
+  return src.slice(open + 1, skipBalanced(src, open) - 1);
+}
+
+const nixStrField = (src, key) =>
+  (src.match(new RegExp(`\\b${key}\\s*=\\s*"([^"]*)"`)) || [])[1] ??
+  (src.match(new RegExp(`\\b${key}\\s*=\\s*''([\\s\\S]*?)''\\s*;`)) || [])[1]?.trim() ?? '';
+
+const nixBoolField = (src, key) => {
+  const m = src.match(new RegExp(`\\b${key}\\s*=\\s*(true|false)\\s*;`));
+  return m ? m[1] === 'true' : undefined;
+};
+
+// Tokenise a `[...] ` list: quoted strings stay whole, bare `a.b.c` tokens kept.
+function nixListField(src, key) {
+  const m = src.match(new RegExp(`\\b${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
+  if (!m) return undefined;
+  const body = m[1].replace(/#[^\n]*/g, ' ');
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|([A-Za-z0-9_][\w.-]*)/g;
+  let t;
+  while ((t = re.exec(body))) out.push(t[1] ?? t[2] ?? t[3]);
+  return [...new Set(out.filter((x) => x && x !== 'with' && x !== 'maintainers'))];
+}
+
+function nixDottedField(src, key) {
+  const m = src.match(new RegExp(`\\b${key}\\s*=\\s*((?:lib\\.)?(?:platforms|maintainers)\\.[\\w.-]+)\\s*;`));
+  return m ? m[1] : '';
+}
+
+// Parse every package option we understand out of a default.nix/flake.nix
+// source. Textual heuristics only — the server never evaluates Nix.
+function parsePackageSource(src) {
+  const meta = extractMetaBlock(src);
+  const scope = meta || src;
+  const licenses = [...new Set([
+    ...(src.match(/\blicenses\.([A-Za-z0-9_-]+)/g) ?? []).map((s) => s.slice('licenses.'.length)),
+    ...(nixListField(meta || src, 'license') ?? []).filter((l) => !l.includes('.')),
+    ...(nixStrField(scope, 'license') ? [nixStrField(scope, 'license')] : []),
+  ])];
+  const maintainers = nixListField(scope, 'maintainers') ?? [];
+  const platformsList = nixListField(scope, 'platforms');
+  const platforms = platformsList ?? (nixDottedField(scope, 'platforms') ? [nixDottedField(scope, 'platforms')] : []);
+  return {
+    pname: nixStrField(src, 'pname'),
+    nameAttr: nixStrField(src, 'name'),
+    version: nixStrField(src, 'version'),
+    description: nixStrField(scope, 'description'),
+    longDescription: nixStrField(scope, 'longDescription'),
+    homepage: nixStrField(scope, 'homepage'),
+    changelog: nixStrField(scope, 'changelog'),
+    downloadPage: nixStrField(scope, 'downloadPage'),
+    mainProgram: nixStrField(scope, 'mainProgram'),
+    licenses,
+    maintainers,
+    platforms,
+    broken: nixBoolField(scope, 'broken'),
+    unfree: nixBoolField(scope, 'unfree') ?? nixBoolField(scope, 'unfreeRedistributable'),
+  };
+}
+
+// Does this flake.nix declare a package output literally named `name`?
+// Looks for `name =` (or quoted) once `packages` appears in the file.
+function declaresFlakePackage(flakeSrc, name) {
+  if (!flakeSrc || !/\bpackages\b/.test(flakeSrc)) return false;
+  const esc = escapeRegExp(name);
+  const rx = new RegExp(`(^|[\\s{,;(.])("${esc}"|'${esc}'|${esc})\\s*=`, 'm');
+  return rx.test(flakeSrc);
+}
+
+// A root default.nix that just re-exports ./pkgs (like this repo's own) is a
+// wrapper, not a package definition.
+const isWrapperDefault = (src) => /import\s+\.\/pkgs\b/.test(src);
+
+// Branch-aware install target: pin to `?ref=` for branches, `?rev=` for SHAs.
+function flakeRefFor(origin, repo, pkg, { branch, head, commit }) {
+  const base = `git+${origin}/git/${repo}.git`;
+  let suffix = '';
+  if (branch && branch !== head) {
+    if (/^[0-9a-f]{4,40}$/i.test(branch) && commit && commit.toLowerCase().startsWith(branch.toLowerCase())) suffix = `?rev=${branch}`;
+    else suffix = `?ref=${encodeURIComponent(branch)}`;
+  }
+  return `${base}${suffix}#${pkg}`;
+}
+
+function commitOf(dir, rev) {
+  try { return git(dir, ['rev-parse', '--verify', rev]).toString('utf8').trim(); } catch { return ''; }
+}
+
+// Latest builder result for a repo+branch, trimmed for the API.
+function latestBuild(repo, branch) {
+  try {
+    let best = null;
+    for (const f of fs.readdirSync(RESULTS_DIR)) {
+      if (!f.endsWith('.json') || f.startsWith('latest-') || f.startsWith('.')) continue;
+      let r;
+      try { r = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, f), 'utf8')); } catch { continue; }
+      if (r.repo !== repo || r.branch !== branch) continue;
+      if (!best || (r.finished_at ?? 0) > (best.finished_at ?? 0)) best = r;
+    }
+    if (!best) return null;
+    const pkgs = {};
+    for (const [n, p] of Object.entries(best.packages ?? {})) {
+      pkgs[n] = { status: p.status, duration_s: p.duration_s };
+    }
+    return { status: best.status, rev: best.rev, finished_at: best.finished_at, packages: pkgs };
+  } catch { return null; }
+}
+
+function packageEntry({ name, repo, kind, sourceFile, src, origin, branch, head, commit, stats, builds }) {
+  const parsed = parsePackageSource(src ?? '');
+  const declared = parsed.pname || '';
+  const warnings = [];
+  if (!PACKAGE_NAME_RE.test(name)) warnings.push(`invalid package name ${JSON.stringify(name)}: use [A-Za-z0-9_-], max 64 chars`);
+  if (kind === 'root' && declared && declared !== name) warnings.push(`pname ${JSON.stringify(declared)} does not match repo name ${JSON.stringify(name)}`);
+  if (kind === 'root' && !declared && !parsed.description) warnings.push('no pname/version/meta found in root default.nix or flake.nix');
+  const version = parsed.version || '';
+  return {
+    name,
+    repo,
+    kind,
+    source: sourceFile,
+    branch,
+    commit,
+    version,
+    bin: parsed.mainProgram || (src?.match(/writeShellScriptBin\s+"([^"]+)"/) || [])[1] || declared || name,
+    description: parsed.description || '',
+    longDescription: parsed.longDescription || '',
+    license: parsed.licenses[0] ?? '',
+    licenses: parsed.licenses,
+    homepage: parsed.homepage,
+    changelog: parsed.changelog,
+    downloadPage: parsed.downloadPage,
+    mainProgram: parsed.mainProgram || '',
+    maintainers: parsed.maintainers,
+    platforms: parsed.platforms,
+    broken: parsed.broken,
+    unfree: parsed.unfree,
+    flake: flakeRefFor(origin, repo, name, { branch, head, commit }),
+    build: builds[name] ?? null,
+    language: stats.mainLanguage,
+    languages: stats.languages,
+    valid: warnings.length === 0,
+    warnings,
+  };
+}
+
+// A repo is a package when its root declares it: root default.nix/package.nix
+// defining the repo-named derivation, or a flake.nix with a matching output.
+function rootPackageFor(repoName, files, contents, ctx) {
+  if (!PACKAGE_NAME_RE.test(repoName)) return null;
+  const has = (p) => files.some((f) => f.path === p);
+  const defaultSrc = has('default.nix') ? (contents['default.nix'] ?? '') : (has('package.nix') ? (contents['package.nix'] ?? '') : '');
+  const flakeSrc = has('flake.nix') ? (contents['flake.nix'] ?? '') : '';
+  const sourceFile = defaultSrc && !isWrapperDefault(defaultSrc) ? (has('default.nix') ? 'default.nix' : 'package.nix')
+    : (flakeSrc && declaresFlakePackage(flakeSrc, repoName) ? 'flake.nix' : '');
+  if (!sourceFile) return null;
+  const src = sourceFile === 'flake.nix' ? flakeSrc : defaultSrc;
+  const stats = ctx.statsFor('');
+  return packageEntry({ name: repoName, repo: repoName, kind: 'root', sourceFile, src, stats, ...ctx });
+}
+
+function legacyPackagesFor(repoName, files, contents, ctx) {
+  return files.filter((f) => /^pkgs\/[^/]+\/default\.nix$/.test(f.path)).map((f) => {
+    const pkg = f.path.split('/')[1];
+    const stats = ctx.statsFor(`pkgs/${pkg}/`);
+    return packageEntry({ name: pkg, repo: repoName, kind: 'legacy', sourceFile: f.path, src: contents[f.path] ?? '', stats, ...ctx });
+  });
+}
 
 function repoJson(name, origin, rev) {
   const dir = dirOf(name);
@@ -183,24 +417,15 @@ function repoJson(name, origin, rev) {
   const { commits, truncated } = commitsOf(dir, want);
   const { files, contents, skipped } = treeOf(dir, want);
   const { languages, mainLanguage } = languagesOf(files);
-  const packages = files.filter((f) => /^pkgs\/[^/]+\/default\.nix$/.test(f.path)).map((f) => {
-    const src = contents[f.path] ?? '';
-    const pkg = f.path.split('/')[1];
-    const prefix = `pkgs/${pkg}/`;
-    const stats = languagesOf(files.filter((x) => x.path.startsWith(prefix)));
-    return {
-      name: pkg,
-      bin: (src.match(/writeShellScriptBin\s+"([^"]+)"/) || [])[1] ?? pkg,
-      description: metaOf(src, 'description'),
-      license: (src.match(/licenses\.([\w-]+)/) || [])[1] ?? '',
-      flake: `git+${origin}/git/${name}.git#${pkg}`,
-      language: stats.mainLanguage,
-      languages: stats.languages,
-    };
-  });
+  const commit = commitOf(dir, want);
+  const builds = latestBuild(name, want)?.packages ?? {};
+  const statsFor = (prefix) => languagesOf(files.filter((x) => (prefix ? x.path.startsWith(prefix) : true)));
+  const ctx = { origin, branch: want, head, commit, statsFor, builds };
+  const root = rootPackageFor(name, files, contents, ctx);
+  const packages = [...(root ? [root] : []), ...legacyPackagesFor(name, files, contents, ctx)];
   const authors = {};
   for (const c of commits) authors[`${c.author} <${c.email}>`] = (authors[`${c.author} <${c.email}>`] ?? 0) + 1;
-  return { name, head, rev: want, branches, commits, truncatedCommits: truncated, files, contents, skippedFiles: skipped, packages, authors, languages, mainLanguage };
+  return { name, head, rev: want, commit, branches, commits, truncatedCommits: truncated, files, contents, skippedFiles: skipped, packages, authors, languages, mainLanguage };
 }
 
 // --- git smart HTTP via real git ---
@@ -328,7 +553,8 @@ const server = http.createServer(async (req, res) => {
       .map((d) => d.slice(0, -4)).map((n) => {
         try {
           const r = repoJson(n, originOf(req));
-          return { name: n, head: r.head, commits: r.commits.length, files: r.files.length, packages: r.packages.length, mainLanguage: r.mainLanguage, languages: r.languages };
+          const publishable = r.packages.filter((p) => p.valid);
+          return { name: n, head: r.head, commits: r.commits.length, files: r.files.length, packages: publishable.length, mainLanguage: r.mainLanguage, languages: r.languages };
         } catch (e) { console.error('repos api:', n, e.message); return null; }
       }).filter(Boolean);
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -371,13 +597,94 @@ const server = http.createServer(async (req, res) => {
   }
   if (u.pathname === '/api/packages') {
     const origin = originOf(req);
+    const seen = new Map();
     const all = [];
-    for (const d of fs.readdirSync(REPOS).filter((x) => x.endsWith('.git'))) {
-      try { for (const p of repoJson(d.slice(0, -4), origin).packages) all.push({ repo: d.slice(0, -4), ...p }); } catch {}
+    for (const d of fs.readdirSync(REPOS).filter((x) => x.endsWith('.git')).sort()) {
+      const repo = d.slice(0, -4);
+      try {
+        for (const p of repoJson(repo, origin).packages) {
+          if (!p.valid) { all.push({ repo, ...p }); continue; }
+          if (seen.has(p.name)) {
+            all.push({ repo, ...p, valid: false, warnings: [...p.warnings, `name taken by ${seen.get(p.name)}`] });
+            continue;
+          }
+          seen.set(p.name, repo);
+          all.push({ repo, ...p });
+        }
+      } catch {}
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(all));
     return;
+  }
+  if (u.pathname === '/api/repos' && req.method === 'POST') {
+    const profile = await oauthUser(req);
+    if (!profile) return json(res, 401, { error: 'sign in required' });
+    saveUser(profile);
+    let input;
+    try { input = await bodyOf(req); } catch { return json(res, 400, { error: 'invalid JSON' }); }
+    const name = String(input.name ?? '').trim();
+    if (!PKG_NAME_RE.test(name)) {
+      return json(res, 400, { error: 'name must match [A-Za-z0-9][A-Za-z0-9_-]{0,63} (dashes ok, no dots)' });
+    }
+    const dir = dirOf(name);
+    if (fs.existsSync(dir)) return json(res, 409, { error: 'repo exists' });
+    try {
+      const init = spawnSync('git', ['init', '--bare', '--quiet', '-b', 'main', dir]);
+      if (init.status !== 0) throw new Error('git init failed');
+      spawnSync('git', ['-C', dir, 'config', 'http.receivepack', 'false']);
+      if (HOOK_RUNNER) {
+        fs.writeFileSync(path.join(dir, 'hooks', 'post-receive'), `#!/bin/sh\nexec ${HOOK_RUNNER} '${name}'\n`);
+        fs.chmodSync(path.join(dir, 'hooks', 'post-receive'), 0o755);
+      }
+    } catch (e) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      return json(res, 500, { error: `create failed: ${e.message}` });
+    }
+    const origin = originOf(req);
+    let host = 'nur.fargone.sh';
+    try { host = new URL(origin).hostname; } catch {}
+    return json(res, 201, {
+      name,
+      clone: `${origin}/git/${name}.git`,
+      push: `ssh://nur@${host}${dir}`,
+      flake: `git+${origin}/git/${name}.git#${name}`,
+    });
+  }
+  const buildsMatch = u.pathname.match(/^\/api\/builds\/([^/]+)$/);
+  if ((u.pathname === '/api/builds' || buildsMatch) && req.method === 'GET') {
+    const onlyRepo = buildsMatch ? decodeURIComponent(buildsMatch[1]) : '';
+    let queue = [];
+    try {
+      queue = fs.readdirSync(QUEUE_DIR).filter((f) => f.endsWith('.json') && !f.startsWith('.'))
+        .map((f) => { try { return { id: f.slice(0, -5), ...JSON.parse(fs.readFileSync(path.join(QUEUE_DIR, f), 'utf8')) }; } catch { return null; } })
+        .filter((j) => j && (!onlyRepo || j.repo === onlyRepo))
+        .sort((a, b) => (a.id < b.id ? -1 : 1));
+    } catch {}
+    let recent = [];
+    try {
+      recent = fs.readdirSync(RESULTS_DIR)
+        .filter((f) => f.endsWith('.json') && !f.startsWith('latest-') && !f.startsWith('.'))
+        .map((f) => { try { return JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, f), 'utf8')); } catch { return null; } })
+        .filter((r) => r && (!onlyRepo || r.repo === onlyRepo))
+        .sort((a, b) => (b.finished_at ?? 0) - (a.finished_at ?? 0))
+        .slice(0, 20)
+        .map(({ packages, ...rest }) => ({
+          ...rest,
+          packages: Object.fromEntries(Object.entries(packages ?? {}).map(([n, p]) => [n, {
+            status: p.status,
+            duration_s: p.duration_s,
+            paths: Array.isArray(p.paths) ? p.paths.slice(0, 8) : [],
+            log_tail: typeof p.log_tail === 'string' ? p.log_tail.slice(-8000) : '',
+          }])),
+        }));
+    } catch {}
+    return json(res, 200, { queue, recent });
+  }
+  if (u.pathname === '/api/cache' && req.method === 'GET') {
+    let publicKey = '';
+    try { publicKey = fs.readFileSync(CACHE_PUBKEY_FILE, 'utf8').trim(); } catch {}
+    return json(res, 200, { endpoint: CACHE_ENDPOINT, bucket: CACHE_BUCKET, publicKey });
   }
   let file = path.normalize(path.join(DIST, u.pathname === '/' ? 'index.html' : u.pathname.slice(1)));
   if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, 'index.html');
